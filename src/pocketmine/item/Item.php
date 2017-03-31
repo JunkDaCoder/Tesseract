@@ -752,6 +752,31 @@ class Item implements ItemIds, \JsonSerializable{
 		return $this;
 	}
 
+	public function getLore() : array{
+		$tag = $this->getNamedTagEntry("display");
+		if($tag instanceof CompoundTag and isset($tag->Lore) and $tag->Lore instanceof ListTag){
+			$lines = [];
+			foreach($tag->Lore->getValue() as $line){
+				$lines[] = $line->getValue();
+			}
+			return $lines;
+		}
+		return [];
+	}
+	public function setLore(array $lines){
+		$tag = $this->getNamedTag();
+		if(!isset($tag->display)){
+			$tag->display = new CompoundTag("display", []);
+		}
+		$tag->display->Lore = new ListTag("Lore");
+		$tag->display->Lore->setTagType(NBT::TAG_String);
+		$count = 0;
+		foreach($lines as $line){
+			$tag->display->Lore[$count++] = new StringTag("", $line);
+		}
+	}
+		
+
 	public function getNamedTagEntry($name){
 		$tag = $this->getNamedTag();
 		if($tag !== null){
@@ -921,7 +946,52 @@ class Item implements ItemIds, \JsonSerializable{
 	public function isLeggings(){
 		return false;
 	}
+const TYPE_ARMOR_PROTECTION = 0;
+    const TYPE_ARMOR_FIRE_PROTECTION = 1;
+    const TYPE_ARMOR_FALL_PROTECTION = 2;
+    const TYPE_ARMOR_EXPLOSION_PROTECTION = 3;
+    const TYPE_ARMOR_PROJECTILE_PROTECTION = 4;
+    const TYPE_ARMOR_THORNS = 5;
+    const TYPE_WATER_BREATHING = 6;
+    const TYPE_WATER_SPEED = 7;
+    const TYPE_WATER_AFFINITY = 8;
+    const TYPE_WEAPON_SHARPNESS = 9;
+    const TYPE_WEAPON_SMITE = 10;
+    const TYPE_WEAPON_ARTHROPODS = 11;
+    const TYPE_WEAPON_KNOCKBACK = 12;
+    const TYPE_WEAPON_FIRE_ASPECT = 13;
+    const TYPE_WEAPON_LOOTING = 14;
+    const TYPE_MINING_EFFICIENCY = 15;
+    const TYPE_MINING_SILK_TOUCH = 16;
+    const TYPE_MINING_DURABILITY = 17;
+    const TYPE_MINING_FORTUNE = 18;
+    const TYPE_BOW_POWER = 19;
+    const TYPE_BOW_KNOCKBACK = 20;
+    const TYPE_BOW_FLAME = 21;
+    const TYPE_BOW_INFINITY = 22;
+    const TYPE_FISHING_FORTUNE = 23;
+    const TYPE_FISHING_LURE = 24;
+  
+    /// CUSTOM ENCHANTMENTS ///
+  
+    const TYPE_WEAPON_BLINDNESS = 100; #done
+    const TYPE_WEAPON_POISON = 101; #done
+    const TYPE_WEAPON_WITHER = 102;
+    const TYPE_WEAPON_DISARMOR = 103;
+    const TYPE_WEAPON_CONFUSION = 104;
 
+    //Armor
+    const TYPE_ARMOR_HULK = 105;##
+    const TYPE_ARMOR_SPEED = 106; ##
+    const TYPE_ARMOR_BLESSED = 107;##
+    const TYPE_ARMOR_SPRINGS = 108;##
+    const TYPE_ARMOR_CLARITY = 109;##
+
+
+
+    //Pickaxe
+    ##const TYPE_MINING_ENERGIZING= 43;
+  
 	public function isChestplate(){
 		return false;
 	}
@@ -959,17 +1029,19 @@ class Item implements ItemIds, \JsonSerializable{
 		return false;
 	}
 
-	public final function equals(Item $item, bool $checkDamage = true, bool $checkCompound = true, bool $checkCount = false) : bool{
-		return $this->id === $item->getId() and ($checkCount === false or $this->getCount() === $item->getCount()) and($checkDamage === false or $this->getDamage() === $item->getDamage()) and ($checkCompound === false or $this->getCompoundTag() === $item->getCompoundTag());
-	}
-
-	public final function deepEquals(Item $item, bool $checkDamage = true, bool $checkCompound = true, bool $checkCount = false) : bool{
-		if($this->equals($item, $checkDamage, $checkCompound, $checkCount)){
-			return true;
-		}elseif($item->hasCompoundTag() and $this->hasCompoundTag()){
-			return NBT::matchTree($this->getNamedTag(), $item->getNamedTag());
+	public final function equals(Item $item, bool $checkDamage = true, bool $checkCompound = true) : bool{
+		if($this->id === $item->getId() and ($checkDamage === false or $this->getDamage() === $item->getDamage())){
+			if($checkCompound){
+				if($item->getCompoundTag() === $this->getCompoundTag()){
+					return true;
+				}elseif($this->hasCompoundTag() and $item->hasCompoundTag()){
+					//Serialized NBT didn't match, check the cached object tree.
+					return NBT::matchTree($this->getNamedTag(), $item->getNamedTag());
+				}
+			}else{
+				return true;
+			}
 		}
-
 		return false;
 	}
 
