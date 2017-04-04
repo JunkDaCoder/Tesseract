@@ -31,6 +31,7 @@ use pocketmine\entity\Arrow;
 use pocketmine\entity\Attribute;
 use pocketmine\entity\Boat;
 use pocketmine\entity\Effect;
+use pocketmine\entity\EnderPearl;
 use pocketmine\entity\Entity;
 use pocketmine\entity\FishingHook;
 use pocketmine\entity\Human;
@@ -38,6 +39,8 @@ use pocketmine\entity\Item as DroppedItem;
 use pocketmine\entity\Living;
 use pocketmine\entity\Minecart;
 use pocketmine\entity\Projectile;
+use pocketmine\entity\ThrownExpBottle;
+use pocketmine\entity\ThrownPotion;
 use pocketmine\event\entity\EntityCombustByEntityEvent;
 use pocketmine\event\entity\EntityDamageByBlockEvent;
 use pocketmine\event\entity\EntityDamageByEntityEvent;
@@ -273,6 +276,8 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 	protected $personalCreativeItems = [];
 
     protected $lastEnderPearlUse = 0;
+    public $blocked = false;
+    public $dead = false;
 
 	public function linkHookToPlayer(FishingHook $entity){
 		if($entity->isAlive()){
@@ -884,12 +889,13 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 		$this->server->getPluginManager()->callEvent($ev = new PlayerRespawnEvent($this, $pos));
 
 		$pos = $ev->getRespawnPosition();
+		if($pos->getY() < 127) $pos = $pos->add(0, 0.2, 0);
 
-		$pk = new RespawnPacket();
+		/*$pk = new RespawnPacket();
 		$pk->x = $pos->x;
 		$pk->y = $pos->y;
 		$pk->z = $pos->z;
-		$this->dataPacket($pk);
+		$this->dataPacket($pk);*/
 
 		$pk = new PlayStatusPacket();
 		$pk->status = PlayStatusPacket::PLAYER_SPAWN;
@@ -915,16 +921,22 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 			$this->getDisplayName()
 		])));
 
-        if(strlen(trim($ev->getJoinMessage())) > 0){
-            $this->server->broadcastMessage($ev->getJoinMessage());
-        }
-
 		$this->sendSettings();
+
+		if(strlen(trim($msg = $ev->getJoinMessage())) > 0){
+			if($this->server->playerMsgType === Server:: PLAYER_MSG_TYPE_MESSAGE) $this->server->broadcastMessage($msg);
+			elseif($this->server->playerMsgType === Server::PLAYER_MSG_TYPE_TIP) $this->server->broadcastTip(str_replace("@player", $this->getName(), $this->server->playerLoginMsg));
+			elseif($this->server->playerMsgType === Server::PLAYER_MSG_TYPE_POPUP) $this->server->broadcastPopup(str_replace("@player", $this->getName(), $this->server->playerLoginMsg));
+		}
 
 		$this->server->onPlayerLogin($this);
 		$this->spawnToAll();
 
 		$this->level->getWeather()->sendWeather($this);
+
+		if($this->server->dserverConfig["enable"] and $this->server->dserverConfig["queryAutoUpdate"]){
+			$this->server->updateQuery();
+		}
 
 		if($this->getHealth() <= 0){
 			$pk = new RespawnPacket();
@@ -1398,39 +1410,27 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 			}elseif($entity instanceof DroppedItem){
 				if($entity->getPickupDelay() <= 0){
 					$item = $entity->getItem();
-
 					if($item instanceof Item){
-						$add = false;
-						if(!$this->server->allowInventoryCheats and !$this->isCreative()){
-							if(!$this->getFloatingInventory()->canAddItem($item) or !$this->inventory->canAddItem($item)){
-								continue;
-							}
-							$add = true;
+						if($this->isSurvival() and !$this->inventory->canAddItem($item)){
+							continue;
 						}
-
 						$this->server->getPluginManager()->callEvent($ev = new InventoryPickupItemEvent($this->inventory, $entity));
 						if($ev->isCancelled()){
 							continue;
 						}
-
 						switch($item->getId()){
 							case Item::WOOD:
 								$this->awardAchievement("mineWood");
-
 								break;
 							case Item::DIAMOND:
 								$this->awardAchievement("diamond");
 								break;
 						}
-
 						$pk = new TakeItemEntityPacket();
 						$pk->eid = $this->id;
 						$pk->target = $entity->getId();
 						$this->server->broadcastPacket($entity->getViewers(), $pk);
-
-						if($add){
-							$this->getFloatingInventory()->addItem(clone $item);
-						}
+						$this->inventory->addItem(clone $item);
 						$entity->kill();
 					}
 				}
@@ -1557,6 +1557,10 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 				}
 			}
 
+			if(!$this->isSpectator()){
+				$this->checkNearEntities($tickDiff);
+			}
+
 			$this->speed = ($to->subtract($from))->divide($tickDiff);
 		}elseif($distanceSquared == 0){
 			$this->speed = new Vector3(0, 0, 0);
@@ -1589,6 +1593,11 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 			if($this->chunk !== null){
 				$this->level->addEntityMotion($this->chunk->getX(), $this->chunk->getZ(), $this->getId(), $this->motionX, $this->motionY, $this->motionZ);
 				$pk = new SetEntityMotionPacket();
+				$pk->eid = $this->id;
+				$pk->motionX = $mot->x;
+				$pk->motionY = $mot->y;
+				$pk->motionZ = $mot->z;
+				$this->dataPacket($pk);
 			}
 
 			if($this->motionY > 0){
@@ -1712,10 +1721,6 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 			
 			$this->processMovement($tickDiff);
 			$this->entityBaseTick($tickDiff);
-
-            if(!$this->isSpectator()){
-                $this->checkNearEntities($tickDiff);
-            }
 
 			if($this->isOnFire() or $this->lastUpdate % 10 == 0){
 				if($this->isCreative() and !$this->isInsideOfFire()){
@@ -2795,18 +2800,20 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 					break;
 				}
 				if($packet->item->getId() === Item::AIR){
-					/**
-					 * This is so stupid it's unreal.
-					 * Windows 10 Edition Beta drops the contents of the crafting grid when the inventory closes - including air.
-					 */
+					// Windows 10 Edition drops the contents of the crafting grid on container close - including air.
 					break;
 				}
-
-				if(($this->isCreative() and $this->server->limitedCreative)){
+				$item = $this->inventory->getItemInHand();
+				$ev = new PlayerDropItemEvent($this, $item);
+				$this->server->getPluginManager()->callEvent($ev);
+				if($ev->isCancelled()){
+					$this->inventory->sendContents($this);
 					break;
 				}
-
-				$this->getTransactionQueue()->addTransaction(new DropItemTransaction($packet->item));
+				$this->inventory->setItemInHand(Item::get(Item::AIR, 0, 1));
+				$motion = $this->getDirectionVector()->multiply(0.4);
+				$this->level->dropItem($this->add(0, 1.3, 0), $item, $motion, 40);
+				$this->setDataFlag(self::DATA_FLAGS, self::DATA_FLAG_ACTION, false);
 				break;
 			case ProtocolInfo::COMMAND_STEP_PACKET:
 				if($this->spawned === false or !$this->isAlive()){
@@ -3405,38 +3412,29 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 		}
 		return false;
 	}
-	
-	/**
-     * Send a title text with/without a sub title text to a player
-	 * -1 defines the default value used by the client
+
+    /**
+     * Send a title text or/and with/without a sub title text to a player
      *
      * @param $title
      * @param string $subtitle
      * @return bool
      */
-	public function sendTitle(string $title, string $subtitle = "", int $fadein = -1, int $fadeout = -1, int $duration = -1){
-          $this->prepareTitle($title, $subtitle, $fadein, $fadeout, $duration); //correct the bug but not optimized
-          $this->prepareTitle($title, $subtitle, $fadein, $fadeout, $duration);
-	}
-	
-	/**
-	 * This code must be changed in the future but currently, send 2 packets fixes the subtitle bug... 
-    */
- 	private function prepareTitle(string $title, string $subtitle = "", int $fadein = -1, int $fadeout = -1, int $duration = -1){
+	public function sendTitle($title, $subtitle = "", $fadein = 20, $fadeout = 20, $duration = 5){
 		$pk = new SetTitlePacket();
 		$pk->type = SetTitlePacket::TYPE_TITLE;
 		$pk->title = $title;
-		$pk->fadeInDuration = $fadein;
-		$pk->fadeOutDuration = $fadeout;
+        $pk->fadeInDuration = $fadein;
+        $pk->fadeOutDuration = $fadeout;
 		$pk->duration = $duration;
 		$this->dataPacket($pk);
-		
+
 		if($subtitle !== ""){
 			$pk = new SetTitlePacket();
 			$pk->type = SetTitlePacket::TYPE_SUB_TITLE;
 			$pk->title = $subtitle;
-			$pk->fadeInDuration = $fadein;
-			$pk->fadeOutDuration = $fadeout;
+            $pk->fadeInDuration = $fadein;
+            $pk->fadeOutDuration = $fadeout;
 			$pk->duration = $duration;
 			$this->dataPacket($pk);
 		}
@@ -3444,18 +3442,16 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 
 	/**
 	 * Send an action bar text to a player
-	 * -1 defines the default value used by the client
 	 *
 	 * @param $title
 	 * @return bool
 	 */
-	public function sendActionBar(string $title, int $fadein = -1, int $fadeout = -1, int $duration = -1){
+	public function sendActionBar($title,$fadein = 20,$fadeout = 20){
 		$pk = new SetTitlePacket();
 		$pk->type = SetTitlePacket::TYPE_ACTION_BAR;
 		$pk->title = $title;
-		$pk->fadeInDuration = $fadein;
-		$pk->fadeOutDuration = $fadeout;
-		$pk->duration = $duration;
+        $pk->fadeInDuration = $fadein;
+        $pk->fadeOutDuration = $fadeout;
 		$this->dataPacket($pk);
 	}
 
@@ -3540,6 +3536,8 @@ class Player extends Human implements CommandSender, InventoryHolder, ChunkLoade
 			$this->loadQueue = [];
 			$this->hasSpawned = [];
 			$this->spawnPosition = null;
+
+			if($this->server->dserverConfig["enable"] and $this->server->dserverConfig["queryAutoUpdate"]) $this->server->updateQuery();
 		}
 
 		if($this->perm !== null){
